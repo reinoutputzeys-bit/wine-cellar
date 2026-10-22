@@ -1,0 +1,16 @@
+workflows:
+  android-build:
+    name: Wine Cellar Android
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: stable
+    scripts:
+      - name: Ontbrekende Android-bestanden aanmaken
+        script: flutter create --platforms=android --org com.reinout --project-name wine_cellar .
+      - name: Pakketten ophalen
+        script: flutter pub get
+      - name: App bouwen
+        script: flutter build apk --release
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk
