@@ -10,4 +10,11 @@
 </activity>
 <meta-data android:name="flutterEmbedding" android:value="2"/>
 </application>
+    <!-- Lets the app open web pages (Search on Google). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
+        </intent>
+    </queries>
 </manifest>
