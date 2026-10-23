@@ -5,12 +5,24 @@ workflows:
     max_build_duration: 30
     environment:
       flutter: stable
+      android_signing:
+        - wine_cellar_keystore
     scripts:
       - name: Ontbrekende Android-bestanden aanmaken
         script: flutter create --platforms=android --org com.reinout --project-name wine_cellar .
+      - name: Vaste ondertekeningssleutel instellen
+        script: |
+          # Use the uploaded keystore as the signing key for every build,
+          # so updates install over the existing app without losing data.
+          mkdir -p "$HOME/.android"
+          cp "$CM_KEYSTORE_PATH" "$HOME/.android/debug.keystore"
+          if [ -n "$ANDROID_USER_HOME" ]; then
+            mkdir -p "$ANDROID_USER_HOME"
+            cp "$CM_KEYSTORE_PATH" "$ANDROID_USER_HOME/debug.keystore"
+          fi
       - name: Pakketten ophalen
         script: flutter pub get
       - name: App bouwen
-        script: flutter build apk --release
+        script: flutter build apk --release --build-number=$BUILD_NUMBER
     artifacts:
       - build/app/outputs/flutter-apk/*.apk
