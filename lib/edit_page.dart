@@ -49,6 +49,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
   late int _qty;
   String? _photo;
   bool _looking = false;
+  bool _loadingPhoto = false;
   bool _typeTouched = false;
   final Set<String> _auto = {};
   String? _lookupSummary;
@@ -135,6 +136,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
     );
     if (src == null) return;
     try {
+      setState(() => _loadingPhoto = true);
       final x = await ImagePicker()
           .pickImage(source: src, maxWidth: 1200, imageQuality: 80);
       if (x == null) return;
@@ -146,11 +148,22 @@ class _BottleEditPageState extends State<BottleEditPage> {
       setState(() => _photo = dest);
       // New bottle with a photo and nothing typed yet: look it up straight away.
       if (_isNew && c('name').text.trim().isEmpty) {
-        _lookup(auto: true);
+        final key = (await CellarDb.getSetting('gemini_key'))?.trim() ?? '';
+        if (!mounted) return;
+        if (key.isEmpty) {
+          setState(() => _lookupSummary =
+              'Tip: add a free Gemini key in ⚙️ Settings and the details are filled in '
+              'automatically from the photo. For now, type them yourself or use the '
+              'Google search button at the top.');
+        } else {
+          _lookup(auto: true);
+        }
       }
     } catch (e) {
       if (!mounted) return;
       _snack('Could not get the photo: $e');
+    } finally {
+      if (mounted) setState(() => _loadingPhoto = false);
     }
   }
 
@@ -257,9 +270,9 @@ class _BottleEditPageState extends State<BottleEditPage> {
         ].join('\n');
       });
     } on LookupException catch (e) {
-      if (mounted) _snack(e.message);
+      if (mounted) setState(() => _lookupSummary = '⚠️ ${e.message}');
     } catch (e) {
-      if (mounted) _snack('Lookup failed: $e');
+      if (mounted) setState(() => _lookupSummary = '⚠️ Lookup failed: $e');
     } finally {
       if (mounted) setState(() => _looking = false);
     }
@@ -405,9 +418,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
         maxLines: maxLines,
         textCapitalization:
             words ? TextCapitalization.words : TextCapitalization.sentences,
-        onChanged: (_) {
-          if (_auto.remove(key)) setState(() {});
-        },
+        onChanged: (_) => setState(() => _auto.remove(key)),
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
@@ -422,6 +433,66 @@ class _BottleEditPageState extends State<BottleEditPage> {
         ),
       ),
     );
+  }
+
+  /// Text field with a dropdown list of suggestions. You can pick one or type.
+  Widget _dropdown(String key, String label, List<String> options,
+      {TextInputType? keyboard}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DropdownMenu<String>(
+        controller: c(key),
+        label: Text(label),
+        expandedInsets: EdgeInsets.zero,
+        menuHeight: 320,
+        enableFilter: true,
+        requestFocusOnTap: true,
+        keyboardType: keyboard,
+        leadingIcon: _auto.contains(key)
+            ? const Tooltip(
+                message: 'Found online',
+                child: Icon(Icons.auto_awesome, color: Colors.amber),
+              )
+            : null,
+        onSelected: (_) {
+          if (_auto.remove(key)) setState(() {});
+        },
+        dropdownMenuEntries: [
+          for (final o in options) DropdownMenuEntry<String>(value: o, label: o),
+        ],
+      ),
+    );
+  }
+
+  List<String> _years(int from, int to) =>
+      [for (var y = from; from <= to ? y <= to : y >= to; from <= to ? y++ : y--) '$y'];
+
+  void _togglePairing(String option) {
+    final list = splitList(c('pairing').text);
+    final i = list.indexWhere((x) => x.toLowerCase() == option.toLowerCase());
+    if (i >= 0) {
+      list.removeAt(i);
+    } else {
+      // Keep the categories first, specific dishes after.
+      final cats = list
+          .where((x) => pairingOptions.any((o) => o.toLowerCase() == x.toLowerCase()))
+          .toList()
+        ..add(option);
+      final rest = list
+          .where((x) => !pairingOptions.any((o) => o.toLowerCase() == x.toLowerCase()))
+          .toList();
+      cats.sort((a, b) => pairingOptions
+          .indexWhere((o) => o.toLowerCase() == a.toLowerCase())
+          .compareTo(pairingOptions.indexWhere((o) => o.toLowerCase() == b.toLowerCase())));
+      list
+        ..clear()
+        ..addAll(cats)
+        ..addAll(rest);
+    }
+    setState(() {
+      _auto.remove('pairing');
+      c('pairing').text = list.join(', ');
+    });
   }
 
   Widget _row(List<Widget> children) => Row(
@@ -450,6 +521,9 @@ class _BottleEditPageState extends State<BottleEditPage> {
   Widget build(BuildContext context) {
     final photo = _photo;
     final hasPhoto = photo != null && photo.isNotEmpty && File(photo).existsSync();
+    final year = DateTime.now().year;
+    final pairingNow =
+        splitList(c('pairing').text).map((e) => e.toLowerCase()).toSet();
     final peopleNow = splitList(c('drinkWith').text).map((e) => e.toLowerCase()).toSet();
     final suggestions =
         _knownPeople.where((x) => !peopleNow.contains(x.toLowerCase())).toList();
@@ -497,8 +571,25 @@ class _BottleEditPageState extends State<BottleEditPage> {
         children: [
           Center(
             child: GestureDetector(
-              onTap: _pickPhoto,
-              child: hasPhoto
+              onTap: _loadingPhoto ? null : _pickPhoto,
+              child: _loadingPhoto
+                  ? Container(
+                      height: 160,
+                      width: 160,
+                      decoration: BoxDecoration(
+                        color: Colors.brown.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 12),
+                          Text('Loading photo…'),
+                        ],
+                      ),
+                    )
+                  : hasPhoto
                   ? ClipRRect(
                       borderRadius: BorderRadius.circular(12),
                       child: Image.file(File(photo), height: 240),
@@ -547,7 +638,8 @@ class _BottleEditPageState extends State<BottleEditPage> {
           _field('name', 'Wine name *'),
           _field('producer', 'Winemaker / château'),
           _row([
-            _field('vintage', 'Year', keyboard: TextInputType.number),
+            _dropdown('vintage', 'Year', _years(year, 1950),
+                keyboard: TextInputType.number),
             _field('alcohol', 'Alcohol', hint: '14%', words: false),
           ]),
           Wrap(
@@ -567,10 +659,8 @@ class _BottleEditPageState extends State<BottleEditPage> {
             ],
           ),
           const SizedBox(height: 16),
-          _row([
-            _field('country', 'Country'),
-            _field('region', 'Region'),
-          ]),
+          _dropdown('country', 'Country', wineCountries),
+          _field('region', 'Region'),
           _field('grapes', 'Grapes', hint: 'Malbec, Cabernet Franc'),
 
           _heading('In the cellar'),
@@ -615,12 +705,30 @@ class _BottleEditPageState extends State<BottleEditPage> {
 
           _heading('When to drink'),
           _row([
-            _field('drinkFrom', 'From (year)', keyboard: TextInputType.number),
-            _field('drinkUntil', 'Until (year)', keyboard: TextInputType.number),
+            _dropdown('drinkFrom', 'From (year)', _years(year - 10, year + 30),
+                keyboard: TextInputType.number),
+            _dropdown('drinkUntil', 'Until (year)', _years(year - 5, year + 50),
+                keyboard: TextInputType.number),
           ]),
 
           _heading('Enjoying it'),
-          _field('pairing', 'Pairs with', hint: 'Steak, lamb, hard cheese', words: false),
+          Text('Pairs with', style: Theme.of(context).textTheme.bodyMedium),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 2,
+            children: [
+              for (final o in pairingOptions)
+                FilterChip(
+                  label: Text(o),
+                  selected: pairingNow.contains(o.toLowerCase()),
+                  onSelected: (_) => _togglePairing(o),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _field('pairing', 'Pairs with (you can also type dishes)',
+              hint: 'Lamb, Cheese, dark chocolate', words: false),
           _field('drinkWith', 'Drink with', hint: 'Names, separated by commas'),
           if (suggestions.isNotEmpty)
             Padding(

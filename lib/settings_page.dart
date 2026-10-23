@@ -53,6 +53,35 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) setState(() => _lastBackup = v);
   }
 
+  bool _testing = false;
+
+  Future<void> _testKey() async {
+    final key = _key.text.trim();
+    if (key.isEmpty) return;
+    setState(() => _testing = true);
+    String result;
+    try {
+      final model = _model.text.trim().isEmpty ? defaultModel : _model.text.trim();
+      final found = await WineLookup.testKey(key, model);
+      result = '✅ The key works. Test answer: $found';
+    } catch (e) {
+      result = '⚠️ $e';
+    }
+    if (!mounted) return;
+    setState(() => _testing = false);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Key test'),
+        content: SelectableText(result),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
+
   Future<void> _restore() async {
     await Backup.restore(context);
   }
@@ -118,6 +147,17 @@ class _SettingsPageState extends State<SettingsPage> {
                       'turned on for your key. Leave off to stay completely free.'),
                   value: _search,
                   onChanged: (v) => setState(() => _search = v),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _testing ? null : _testKey,
+                  icon: _testing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.network_check),
+                  label: Text(_testing ? 'Testing…' : 'Test key'),
                 ),
                 const SizedBox(height: 20),
                 FilledButton.icon(

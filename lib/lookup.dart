@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,7 +11,11 @@ const String defaultModel = 'gemini-flash-latest';
 
 /// What the online lookup found. Every field may be null.
 class WineInfo {
-  WineInfo(this.raw);
+  WineInfo(Map<String, dynamic> source)
+      : raw = {
+          for (final e in source.entries)
+            e.key.toLowerCase().replaceAll(' ', '_'): e.value
+        };
 
   final Map<String, dynamic> raw;
 
@@ -58,14 +63,14 @@ Reply with ONLY one JSON object, no other text, using exactly these keys:
   "producer": winery / château / winemaker (string),
   "vintage": year as number, or null if non-vintage or unreadable,
   "type": one of "Red", "White", "Sparkling", "Other" (rosé, sweet, dessert, fortified = "Other"),
-  "country": country in English (string),
+  "country": country in English, e.g. France, Italy, Hungary, Czech Republic, United States (string),
   "region": region / appellation (string),
   "grapes": grape varieties, comma separated (string),
   "alcohol": e.g. "14.5%" (string),
   "drink_from": first year it is good to drink (number),
   "drink_until": last year it is at its best (number),
   "price_eur": typical retail price per bottle in euro (number),
-  "pairing": food pairings, short and comma separated (string),
+  "pairing": comma separated; first the matching words from this list: Apero, Fish, Lamb, Beef, Game, Poultry, Spaghetti, Cheese, Dessert, Other; then at most 2 specific dishes (string),
   "description": 2-3 sentences about style and taste (string),
   "confidence": "high", "medium" or "low" (how sure you are it is this exact wine)
 }
@@ -101,6 +106,60 @@ Use null for anything you do not know. Never invent values.''';
           : 'Details I already know:\n${known.join('\n')}\n\nGive all the details.',
     });
 
+    final models = <String>[
+      model,
+      for (final m in _fallbackModels)
+        if (m != model) m,
+    ];
+    LookupException? last;
+    for (final m in models) {
+      try {
+        return await _ask(apiKey, m, parts, useGoogleSearch);
+      } on _TryNextModel catch (e) {
+        last = LookupException(e.message);
+      }
+    }
+    throw last ?? LookupException('Lookup failed.');
+  }
+
+  /// Tried in this order when a model is not available for the key.
+  static const _fallbackModels = [
+    'gemini-flash-latest',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-flash-lite-latest',
+  ];
+
+  static const Map<String, dynamic> _schema = {
+    'type': 'OBJECT',
+    'properties': {
+      'name': {'type': 'STRING', 'nullable': true},
+      'producer': {'type': 'STRING', 'nullable': true},
+      'vintage': {'type': 'INTEGER', 'nullable': true},
+      'type': {
+        'type': 'STRING',
+        'nullable': true,
+        'enum': ['Red', 'White', 'Sparkling', 'Other'],
+      },
+      'country': {'type': 'STRING', 'nullable': true},
+      'region': {'type': 'STRING', 'nullable': true},
+      'grapes': {'type': 'STRING', 'nullable': true},
+      'alcohol': {'type': 'STRING', 'nullable': true},
+      'drink_from': {'type': 'INTEGER', 'nullable': true},
+      'drink_until': {'type': 'INTEGER', 'nullable': true},
+      'price_eur': {'type': 'NUMBER', 'nullable': true},
+      'pairing': {'type': 'STRING', 'nullable': true},
+      'description': {'type': 'STRING', 'nullable': true},
+      'confidence': {
+        'type': 'STRING',
+        'nullable': true,
+        'enum': ['high', 'medium', 'low'],
+      },
+    },
+  };
+
+  static Future<WineInfo> _ask(String apiKey, String model,
+      List<Map<String, dynamic>> parts, bool useGoogleSearch) async {
     final body = <String, dynamic>{
       'systemInstruction': {
         'parts': [
@@ -115,7 +174,10 @@ Use null for anything you do not know. Never invent values.''';
           {'google_search': <String, dynamic>{}}
         ]
       else
-        'generationConfig': {'responseMimeType': 'application/json'},
+        'generationConfig': {
+          'responseMimeType': 'application/json',
+          'responseSchema': _schema,
+        },
     };
 
     final http.Response resp;
@@ -133,6 +195,8 @@ Use null for anything you do not know. Never invent values.''';
           .timeout(const Duration(seconds: 90));
     } on SocketException {
       throw LookupException('No internet connection.');
+    } on TimeoutException {
+      throw LookupException('Google took too long to answer. Please try again.');
     } catch (e) {
       throw LookupException('Lookup failed: $e');
     }
@@ -142,35 +206,46 @@ Use null for anything you do not know. Never invent values.''';
     try {
       data = jsonDecode(text) as Map<String, dynamic>;
     } catch (_) {
-      throw LookupException('Unexpected answer (${resp.statusCode}).');
+      throw LookupException('Unexpected answer from Google (${resp.statusCode}).');
     }
 
     if (resp.statusCode != 200) {
       final err = data['error'];
       final msg = err is Map ? (err['message'] ?? '').toString() : text;
-      if (resp.statusCode == 400 && msg.toLowerCase().contains('api key')) {
-        throw LookupException('The API key is not valid. Check it in Settings.');
+      final status = err is Map ? (err['status'] ?? '').toString() : '';
+      final detail = '(${resp.statusCode} $status) $msg'.trim();
+      // Model not available for this key: try the next one.
+      if (resp.statusCode == 404 ||
+          (resp.statusCode == 401 && msg.contains('ACCESS_TOKEN_TYPE_UNSUPPORTED')) ||
+          (resp.statusCode == 400 && msg.toLowerCase().contains('model'))) {
+        throw _TryNextModel('Model "$model" is not available: $detail');
       }
-      if (resp.statusCode == 403) {
-        throw LookupException('The API key is not allowed to do this. Check it in Settings.');
+      if (resp.statusCode == 400 && msg.toLowerCase().contains('api key')) {
+        throw LookupException('Google does not accept this key. Check it in Settings. $detail');
+      }
+      if (resp.statusCode == 401 || resp.statusCode == 403) {
+        throw LookupException('Google refused the key. $detail');
       }
       if (resp.statusCode == 429) {
         throw LookupException(useGoogleSearch
-            ? 'Google Search is not included in the free tier. Turn it off in Settings.'
-            : 'Free limit reached for now. Try again in a minute (or tomorrow).');
+            ? 'Google Search is not included in the free tier. Turn it off in Settings. $detail'
+            : 'Free limit reached for now. Try again in a minute. $detail');
       }
-      if (resp.statusCode == 404) {
-        throw LookupException('Model "$model" not found. Check the model in Settings.');
-      }
-      throw LookupException('Lookup failed (${resp.statusCode}): $msg');
+      throw LookupException('Lookup failed $detail');
     }
 
     final candidates = (data['candidates'] as List?) ?? const [];
     if (candidates.isEmpty) {
-      throw LookupException('Could not find details for this wine.');
+      final block = (data['promptFeedback'] is Map)
+          ? (data['promptFeedback'] as Map)['blockReason']
+          : null;
+      throw LookupException(
+          'Google gave no answer${block == null ? '' : ' (blocked: $block)'}.');
     }
-    final content = (candidates.first as Map)['content'];
-    final outParts = content is Map ? (content['parts'] as List?) ?? const [] : const [];
+    final cand = candidates.first as Map;
+    final content = cand['content'];
+    final outParts =
+        content is Map ? (content['parts'] as List?) ?? const [] : const [];
     final answer = outParts
         .whereType<Map>()
         .where((p) => p['text'] != null && p['thought'] != true)
@@ -180,12 +255,26 @@ Use null for anything you do not know. Never invent values.''';
     final start = answer.indexOf('{');
     final end = answer.lastIndexOf('}');
     if (start < 0 || end <= start) {
-      throw LookupException('Could not find details for this wine.');
+      final reason = cand['finishReason'];
+      throw LookupException(
+          'Google could not identify this wine${reason == null || reason == 'STOP' ? '' : ' ($reason)'}.');
     }
     try {
       final json = jsonDecode(answer.substring(start, end + 1));
       if (json is Map<String, dynamic>) return WineInfo(json);
     } catch (_) {}
-    throw LookupException('Could not read the details that were found.');
+    throw LookupException('Could not read the details Google sent back.');
   }
+
+  /// Small text-only request to check that the key works.
+  static Future<String> testKey(String apiKey, String model) async {
+    final info = await lookup(
+        apiKey: apiKey, model: model, name: 'Château Margaux', vintage: '2015');
+    return info.str('producer') ?? info.str('name') ?? 'an answer';
+  }
+}
+
+class _TryNextModel implements Exception {
+  _TryNextModel(this.message);
+  final String message;
 }

@@ -19,6 +19,7 @@ class BottleFilter {
     'grape',
     'producer',
     'people',
+    'pairing',
     'column',
     'drawer',
   ];
@@ -31,6 +32,7 @@ class BottleFilter {
     'grape': 'Grape',
     'producer': 'Winemaker',
     'people': 'Drink with',
+    'pairing': 'Pairs with',
     'column': 'Column',
     'drawer': 'Drawer',
   };
@@ -88,6 +90,7 @@ class BottleFilter {
     if (!anyIn('grape', b.grapeList)) return false;
     if (!anyIn('producer', [b.producer])) return false;
     if (!anyIn('people', b.peopleList)) return false;
+    if (!anyIn('pairing', splitList(b.pairing))) return false;
 
     final drink = this['drink'];
     if (drink.isNotEmpty) {
@@ -451,6 +454,10 @@ class _FilterSheetState extends State<FilterSheet> {
               _section('grape', _options((b) => b.grapeList)),
               _section('producer', _options((b) => [b.producer])),
               _section('people', _options((b) => b.peopleList)),
+              _section(
+                  'pairing',
+                  _options((b) => splitList(b.pairing).where((x) => pairingOptions
+                      .any((o) => o.toLowerCase() == x.toLowerCase())))),
               _section('column', columns),
               _section('drawer', drawerCounts),
             ],

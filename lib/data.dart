@@ -327,10 +327,14 @@ Future<bool> changeQuantity(BuildContext context, Bottle b, int delta) async {
 // SEARCH ON GOOGLE
 // ============================================================
 Future<void> searchOnGoogle(BuildContext context, Bottle b) async {
-  final q = [b.producer, b.name, b.vintage?.toString() ?? '', 'wine']
+  final wine = [b.producer, b.name, b.vintage?.toString() ?? '']
       .where((s) => s.trim().isNotEmpty)
       .join(' ');
-  final url = Uri.https('www.google.com', '/search', {'q': q});
+  final q = 'Give me all info on this wine: $wine. '
+      'Put producer, year, grape, style (red, white, sparkling or other), '
+      'pairing, when to drink and price in a simple table.';
+  // udm=50 opens Google's AI Mode.
+  final url = Uri.https('www.google.com', '/search', {'q': q, 'udm': '50'});
   bool ok = false;
   try {
     ok = await launchUrl(url, mode: LaunchMode.externalApplication);
@@ -340,3 +344,30 @@ Future<void> searchOnGoogle(BuildContext context, Bottle b) async {
         const SnackBar(content: Text('Could not open the browser')));
   }
 }
+
+// ============================================================
+// CHOICES FOR THE DROPDOWNS
+// ============================================================
+const List<String> pairingOptions = [
+  'Apero',
+  'Fish',
+  'Lamb',
+  'Beef',
+  'Game',
+  'Poultry',
+  'Spaghetti',
+  'Cheese',
+  'Dessert',
+  'Other',
+];
+
+const List<String> wineCountries = [
+  'Argentina', 'Armenia', 'Australia', 'Austria', 'Belgium',
+  'Bosnia and Herzegovina', 'Brazil', 'Bulgaria', 'Canada', 'Chile', 'China',
+  'Croatia', 'Cyprus', 'Czech Republic', 'England', 'France', 'Georgia',
+  'Germany', 'Greece', 'Hungary', 'Israel', 'Italy', 'Japan', 'Lebanon',
+  'Luxembourg', 'Mexico', 'Moldova', 'Montenegro', 'Morocco', 'Netherlands',
+  'New Zealand', 'North Macedonia', 'Poland', 'Portugal', 'Romania', 'Serbia',
+  'Slovakia', 'Slovenia', 'South Africa', 'Spain', 'Switzerland', 'Turkey',
+  'Ukraine', 'United States', 'Uruguay',
+];
