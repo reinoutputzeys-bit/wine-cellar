@@ -12,17 +12,62 @@ workflows:
         script: flutter create --platforms=android --org com.reinout --project-name wine_cellar .
       - name: Vaste ondertekeningssleutel instellen
         script: |
-          # Use the uploaded keystore as the signing key for every build,
-          # so updates install over the existing app without losing data.
-          mkdir -p "$HOME/.android"
-          cp "$CM_KEYSTORE_PATH" "$HOME/.android/debug.keystore"
-          if [ -n "$ANDROID_USER_HOME" ]; then
-            mkdir -p "$ANDROID_USER_HOME"
-            cp "$CM_KEYSTORE_PATH" "$ANDROID_USER_HOME/debug.keystore"
-          fi
+          # Sign every build with the uploaded keystore, so updates install
+          # over the existing app without losing data.
+          python3 - <<'PY'
+          import os, sys
+          kts = 'android/app/build.gradle.kts'
+          groovy = 'android/app/build.gradle'
+          if os.path.exists(kts):
+              p = kts
+              block = '''    signingConfigs {
+                  create("release") {
+                      storeFile = file(System.getenv("CM_KEYSTORE_PATH"))
+                      storePassword = System.getenv("CM_KEYSTORE_PASSWORD")
+                      keyAlias = System.getenv("CM_KEY_ALIAS")
+                      keyPassword = System.getenv("CM_KEY_PASSWORD")
+                  }
+              }
+
+              buildTypes {'''
+              old_cfg, new_cfg = 'signingConfigs.getByName("debug")', 'signingConfigs.getByName("release")'
+          elif os.path.exists(groovy):
+              p = groovy
+              block = '''    signingConfigs {
+                  release {
+                      storeFile file(System.getenv("CM_KEYSTORE_PATH"))
+                      storePassword System.getenv("CM_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("CM_KEY_ALIAS")
+                      keyPassword System.getenv("CM_KEY_PASSWORD")
+                  }
+              }
+
+              buildTypes {'''
+              old_cfg, new_cfg = 'signingConfigs.debug', 'signingConfigs.release'
+          else:
+              sys.exit('No android/app/build.gradle(.kts) found')
+          s = open(p).read()
+          if '    buildTypes {' not in s or old_cfg not in s:
+              sys.exit('Unexpected Gradle file, could not set up signing:\n' + s)
+          s = s.replace('    buildTypes {', block, 1).replace(old_cfg, new_cfg)
+          open(p, 'w').write(s)
+          print('Signing configured in ' + p)
+          PY
       - name: Pakketten ophalen
         script: flutter pub get
       - name: App bouwen
         script: flutter build apk --release --build-number=$BUILD_NUMBER
+      - name: Handtekening controleren
+        script: |
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          APKSIGNER=$(ls "$SDK"/build-tools/*/apksigner | sort -V | tail -1)
+          OUT=$("$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk)
+          echo "$OUT"
+          if echo "$OUT" | grep -qi "44ecfa75788ef3d93d75669070d68773f1310d22558cc760ba996dce6061e3fe"; then
+            echo "OK: signed with the wine cellar key"
+          else
+            echo "ERROR: the APK is NOT signed with the wine cellar key"
+            exit 1
+          fi
     artifacts:
       - build/app/outputs/flutter-apk/*.apk
