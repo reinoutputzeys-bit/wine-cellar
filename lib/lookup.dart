@@ -112,12 +112,25 @@ Use null for anything you do not know. Never invent values.''';
         if (m != model) m,
     ];
     LookupException? last;
+    var busy = false;
     for (final m in models) {
-      try {
-        return await _ask(apiKey, m, parts, useGoogleSearch);
-      } on _TryNextModel catch (e) {
-        last = LookupException(e.message);
+      // A busy model gets one more try after a short pause.
+      for (var attempt = 0; attempt < 2; attempt++) {
+        try {
+          return await _ask(apiKey, m, parts, useGoogleSearch);
+        } on _Busy catch (e) {
+          busy = true;
+          last = LookupException(e.message);
+          if (attempt == 0) await Future<void>.delayed(const Duration(seconds: 3));
+        } on _TryNextModel catch (e) {
+          last = LookupException(e.message);
+          break;
+        }
       }
+    }
+    if (busy) {
+      throw LookupException(
+          "Google's free AI is very busy right now. Please try again in a few minutes.");
     }
     throw last ?? LookupException('Lookup failed.');
   }
@@ -125,9 +138,9 @@ Use null for anything you do not know. Never invent values.''';
   /// Tried in this order when a model is not available for the key.
   static const _fallbackModels = [
     'gemini-flash-latest',
+    'gemini-flash-lite-latest',
     'gemini-3.6-flash',
     'gemini-3.5-flash',
-    'gemini-flash-lite-latest',
   ];
 
   static const Map<String, dynamic> _schema = {
@@ -214,6 +227,10 @@ Use null for anything you do not know. Never invent values.''';
       final msg = err is Map ? (err['message'] ?? '').toString() : text;
       final status = err is Map ? (err['status'] ?? '').toString() : '';
       final detail = '(${resp.statusCode} $status) $msg'.trim();
+      // Google is overloaded ("high demand"): wait, then try again or another model.
+      if (resp.statusCode == 503 || resp.statusCode == 500 || resp.statusCode == 504) {
+        throw _Busy('Google is busy: $detail');
+      }
       // Model not available for this key: try the next one.
       if (resp.statusCode == 404 ||
           (resp.statusCode == 401 && msg.contains('ACCESS_TOKEN_TYPE_UNSUPPORTED')) ||
@@ -272,6 +289,11 @@ Use null for anything you do not know. Never invent values.''';
         apiKey: apiKey, model: model, name: 'Château Margaux', vintage: '2015');
     return info.str('producer') ?? info.str('name') ?? 'an answer';
   }
+}
+
+class _Busy implements Exception {
+  _Busy(this.message);
+  final String message;
 }
 
 class _TryNextModel implements Exception {
