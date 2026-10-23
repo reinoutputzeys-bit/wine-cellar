@@ -156,7 +156,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
 
   // ---------------- online lookup ----------------
   Future<void> _lookup({bool auto = false}) async {
-    final key = (await CellarDb.getSetting('api_key'))?.trim() ?? '';
+    final key = (await CellarDb.getSetting('gemini_key'))?.trim() ?? '';
     if (!mounted) return;
     if (key.isEmpty) {
       if (auto) return;
@@ -165,7 +165,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
         builder: (ctx) => AlertDialog(
           title: const Text('Set up online lookup'),
           content: const Text(
-              'To look up wines online, add your Claude API key in Settings first.'),
+              'To look up wines online, add your free Gemini API key in Settings first.'),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
@@ -182,7 +182,8 @@ class _BottleEditPageState extends State<BottleEditPage> {
       }
       return;
     }
-    final model = (await CellarDb.getSetting('model'))?.trim() ?? '';
+    final model = (await CellarDb.getSetting('gemini_model'))?.trim() ?? '';
+    final useSearch = (await CellarDb.getSetting('gemini_search')) == '1';
 
     setState(() {
       _looking = true;
@@ -192,6 +193,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
       final info = await WineLookup.lookup(
         apiKey: key,
         model: model.isEmpty ? defaultModel : model,
+        useGoogleSearch: useSearch,
         photoPath: _photo,
         name: c('name').text,
         producer: c('producer').text,
@@ -248,7 +250,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
         _lookupSummary = [
           filled.isEmpty
               ? 'Nothing new found online.'
-              : 'Filled in ${filled.length} field${filled.length == 1 ? '' : 's'} from the web (marked ✨). Please check them.',
+              : 'Filled in ${filled.length} field${filled.length == 1 ? '' : 's'} (marked ✨). Please check them, especially price and drink window.',
           if (conf == 'low') 'Not sure this is the exact wine — double-check name and year.',
           if (missing.isNotEmpty) 'Still missing: ${missing.join(', ')}.',
           if (_drawer == null) 'Choose a drawer below.',
@@ -509,7 +511,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.travel_explore),
-              label: Text(_looking ? 'Searching the web…' : 'Look up online'),
+              label: Text(_looking ? 'Looking it up…' : 'Look up online'),
             ),
           ),
           if (_lookupSummary != null)

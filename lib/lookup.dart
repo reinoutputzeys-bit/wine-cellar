@@ -5,7 +5,8 @@ import 'package:http/http.dart' as http;
 
 import 'data.dart';
 
-const String defaultModel = 'claude-sonnet-5-5';
+/// Always points to Google's newest Flash model (free tier).
+const String defaultModel = 'gemini-flash-latest';
 
 /// What the online lookup found. Every field may be null.
 class WineInfo {
@@ -45,19 +46,18 @@ class LookupException implements Exception {
   String toString() => message;
 }
 
-/// Asks Claude (with web search) to identify the wine from the label photo
-/// and/or the details typed so far, and to fill in everything it can find.
+/// Asks Google Gemini to identify the wine from the label photo and/or the
+/// details typed so far, and to fill in everything it knows.
 class WineLookup {
   static const _system = '''
 You are a wine expert helping someone catalogue their home wine cellar in Belgium.
-Identify the exact wine from the label photo and/or the details given, then search the web
-(Vivino, Wine-Searcher, the producer's own website, wine shops, reviews) to complete the details.
+Identify the exact wine from the label photo and/or the details given, and give all the details you know about it.
 Reply with ONLY one JSON object, no other text, using exactly these keys:
 {
   "name": wine name without producer and vintage (string),
   "producer": winery / château / winemaker (string),
   "vintage": year as number, or null if non-vintage or unreadable,
-  "type": one of "Red", "White", "Sparkling", "Other" (rosé, sweet, fortified = "Other"),
+  "type": one of "Red", "White", "Sparkling", "Other" (rosé, sweet, dessert, fortified = "Other"),
   "country": country in English (string),
   "region": region / appellation (string),
   "grapes": grape varieties, comma separated (string),
@@ -66,29 +66,25 @@ Reply with ONLY one JSON object, no other text, using exactly these keys:
   "drink_until": last year it is at its best (number),
   "price_eur": typical retail price per bottle in euro (number),
   "pairing": food pairings, short and comma separated (string),
-  "description": 2-3 sentences about style and taste, in your own words (string),
+  "description": 2-3 sentences about style and taste (string),
   "confidence": "high", "medium" or "low" (how sure you are it is this exact wine)
 }
-Use null for anything you cannot find. Never invent values.''';
+Use null for anything you do not know. Never invent values.''';
 
   static Future<WineInfo> lookup({
     required String apiKey,
     String model = defaultModel,
+    bool useGoogleSearch = false,
     String? photoPath,
     String name = '',
     String producer = '',
     String vintage = '',
   }) async {
-    final content = <Map<String, dynamic>>[];
+    final parts = <Map<String, dynamic>>[];
     if (photoPath != null && photoPath.isNotEmpty && File(photoPath).existsSync()) {
       final bytes = await File(photoPath).readAsBytes();
-      content.add({
-        'type': 'image',
-        'source': {
-          'type': 'base64',
-          'media_type': 'image/jpeg',
-          'data': base64Encode(bytes),
-        },
+      parts.add({
+        'inlineData': {'mimeType': 'image/jpeg', 'data': base64Encode(bytes)},
       });
     }
     final known = [
@@ -96,91 +92,100 @@ Use null for anything you cannot find. Never invent values.''';
       if (producer.trim().isNotEmpty) 'Producer: ${producer.trim()}',
       if (vintage.trim().isNotEmpty) 'Vintage: ${vintage.trim()}',
     ];
-    if (content.isEmpty && known.isEmpty) {
+    if (parts.isEmpty && known.isEmpty) {
       throw LookupException('Add a photo or type at least the name first.');
     }
-    content.add({
-      'type': 'text',
+    parts.add({
       'text': known.isEmpty
-          ? 'Which wine is this? Fill in all the details.'
-          : 'Details I already know:\n${known.join('\n')}\n\nFill in all the details.',
+          ? 'Which wine is this? Give all the details.'
+          : 'Details I already know:\n${known.join('\n')}\n\nGive all the details.',
     });
 
-    final messages = <Map<String, dynamic>>[
-      {'role': 'user', 'content': content},
-    ];
+    final body = <String, dynamic>{
+      'systemInstruction': {
+        'parts': [
+          {'text': _system}
+        ]
+      },
+      'contents': [
+        {'role': 'user', 'parts': parts}
+      ],
+      if (useGoogleSearch)
+        'tools': [
+          {'google_search': <String, dynamic>{}}
+        ]
+      else
+        'generationConfig': {'responseMimeType': 'application/json'},
+    };
 
-    for (var round = 0; round < 4; round++) {
-      final http.Response resp;
-      try {
-        resp = await http
-            .post(
-              Uri.parse('https://api.anthropic.com/v1/messages'),
-              headers: {
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-              },
-              body: jsonEncode({
-                'model': model,
-                'max_tokens': 2500,
-                'system': _system,
-                'messages': messages,
-                'tools': [
-                  {
-                    'type': 'web_search_20250305',
-                    'name': 'web_search',
-                    'max_uses': 5,
-                  }
-                ],
-              }),
-            )
-            .timeout(const Duration(seconds: 120));
-      } on SocketException {
-        throw LookupException('No internet connection.');
-      } catch (e) {
-        throw LookupException('Lookup failed: $e');
-      }
-
-      final body = utf8.decode(resp.bodyBytes);
-      Map<String, dynamic> data;
-      try {
-        data = jsonDecode(body) as Map<String, dynamic>;
-      } catch (_) {
-        throw LookupException('Unexpected answer (${resp.statusCode}).');
-      }
-      if (resp.statusCode != 200) {
-        final err = data['error'];
-        final msg = err is Map ? err['message'] : null;
-        if (resp.statusCode == 401) {
-          throw LookupException('The API key is not valid. Check it in Settings.');
-        }
-        throw LookupException('Lookup failed (${resp.statusCode}): ${msg ?? body}');
-      }
-
-      final blocks = (data['content'] as List?) ?? const [];
-      if (data['stop_reason'] == 'pause_turn') {
-        // Long web search: let it continue where it stopped.
-        messages.add({'role': 'assistant', 'content': blocks});
-        continue;
-      }
-
-      final text = blocks
-          .whereType<Map>()
-          .where((b) => b['type'] == 'text')
-          .map((b) => b['text'].toString())
-          .join('\n');
-      final start = text.indexOf('{');
-      final end = text.lastIndexOf('}');
-      if (start < 0 || end <= start) {
-        throw LookupException('Could not find details for this wine.');
-      }
-      try {
-        final json = jsonDecode(text.substring(start, end + 1));
-        if (json is Map<String, dynamic>) return WineInfo(json);
-      } catch (_) {}
-      throw LookupException('Could not read the details that were found.');
+    final http.Response resp;
+    try {
+      resp = await http
+          .post(
+            Uri.parse(
+                'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent'),
+            headers: {
+              'x-goog-api-key': apiKey,
+              'content-type': 'application/json',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 90));
+    } on SocketException {
+      throw LookupException('No internet connection.');
+    } catch (e) {
+      throw LookupException('Lookup failed: $e');
     }
-    throw LookupException('The search took too long. Please try again.');
+
+    final text = utf8.decode(resp.bodyBytes);
+    Map<String, dynamic> data;
+    try {
+      data = jsonDecode(text) as Map<String, dynamic>;
+    } catch (_) {
+      throw LookupException('Unexpected answer (${resp.statusCode}).');
+    }
+
+    if (resp.statusCode != 200) {
+      final err = data['error'];
+      final msg = err is Map ? (err['message'] ?? '').toString() : text;
+      if (resp.statusCode == 400 && msg.toLowerCase().contains('api key')) {
+        throw LookupException('The API key is not valid. Check it in Settings.');
+      }
+      if (resp.statusCode == 403) {
+        throw LookupException('The API key is not allowed to do this. Check it in Settings.');
+      }
+      if (resp.statusCode == 429) {
+        throw LookupException(useGoogleSearch
+            ? 'Google Search is not included in the free tier. Turn it off in Settings.'
+            : 'Free limit reached for now. Try again in a minute (or tomorrow).');
+      }
+      if (resp.statusCode == 404) {
+        throw LookupException('Model "$model" not found. Check the model in Settings.');
+      }
+      throw LookupException('Lookup failed (${resp.statusCode}): $msg');
+    }
+
+    final candidates = (data['candidates'] as List?) ?? const [];
+    if (candidates.isEmpty) {
+      throw LookupException('Could not find details for this wine.');
+    }
+    final content = (candidates.first as Map)['content'];
+    final outParts = content is Map ? (content['parts'] as List?) ?? const [] : const [];
+    final answer = outParts
+        .whereType<Map>()
+        .where((p) => p['text'] != null && p['thought'] != true)
+        .map((p) => p['text'].toString())
+        .join('\n');
+
+    final start = answer.indexOf('{');
+    final end = answer.lastIndexOf('}');
+    if (start < 0 || end <= start) {
+      throw LookupException('Could not find details for this wine.');
+    }
+    try {
+      final json = jsonDecode(answer.substring(start, end + 1));
+      if (json is Map<String, dynamic>) return WineInfo(json);
+    } catch (_) {}
+    throw LookupException('Could not read the details that were found.');
   }
 }

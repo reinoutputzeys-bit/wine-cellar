@@ -13,6 +13,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final _key = TextEditingController();
   final _model = TextEditingController();
+  bool _search = false;
   bool _show = false;
   bool _loading = true;
 
@@ -23,8 +24,9 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _load() async {
-    _key.text = await CellarDb.getSetting('api_key') ?? '';
-    _model.text = await CellarDb.getSetting('model') ?? defaultModel;
+    _key.text = await CellarDb.getSetting('gemini_key') ?? '';
+    _model.text = await CellarDb.getSetting('gemini_model') ?? defaultModel;
+    _search = (await CellarDb.getSetting('gemini_search')) == '1';
     if (mounted) setState(() => _loading = false);
   }
 
@@ -36,9 +38,10 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _save() async {
-    await CellarDb.setSetting('api_key', _key.text.trim());
-    await CellarDb.setSetting(
-        'model', _model.text.trim().isEmpty ? defaultModel : _model.text.trim());
+    await CellarDb.setSetting('gemini_key', _key.text.trim());
+    await CellarDb.setSetting('gemini_model',
+        _model.text.trim().isEmpty ? defaultModel : _model.text.trim());
+    await CellarDb.setSetting('gemini_search', _search ? '1' : '0');
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('Settings saved')));
@@ -54,13 +57,12 @@ class _SettingsPageState extends State<SettingsPage> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                Text('Online wine lookup',
+                Text('Online wine lookup (Google Gemini)',
                     style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
                 const Text(
-                  'When you add a bottle, the app can read the label photo and search the web '
-                  '(Vivino, Wine-Searcher, producer sites…) to fill in the details. '
-                  'This uses the Claude API with your own key. Each lookup costs a few cents.',
+                  'When you add a bottle, Gemini reads the label photo and fills in the details. '
+                  'Get a free API key at aistudio.google.com (no credit card needed).',
                 ),
                 const SizedBox(height: 16),
                 TextField(
@@ -69,8 +71,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   autocorrect: false,
                   enableSuggestions: false,
                   decoration: InputDecoration(
-                    labelText: 'Claude API key',
-                    hintText: 'sk-ant-…',
+                    labelText: 'Gemini API key',
+                    hintText: 'AIza…',
                     border: const OutlineInputBorder(),
                     suffixIcon: IconButton(
                       icon: Icon(_show ? Icons.visibility_off : Icons.visibility),
@@ -86,6 +88,16 @@ class _SettingsPageState extends State<SettingsPage> {
                     labelText: 'Model',
                     border: OutlineInputBorder(),
                   ),
+                ),
+                const SizedBox(height: 4),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Also search Google'),
+                  subtitle: const Text(
+                      'More up-to-date prices and details, but only works when billing is '
+                      'turned on for your key. Leave off to stay completely free.'),
+                  value: _search,
+                  onChanged: (v) => setState(() => _search = v),
                 ),
                 const SizedBox(height: 20),
                 FilledButton.icon(
