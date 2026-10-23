@@ -116,8 +116,11 @@ class _HomePageState extends State<HomePage> {
           IconButton(
             tooltip: 'Settings',
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const SettingsPage())),
+            onPressed: () async {
+              await Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SettingsPage()));
+              _load(); // a restored backup changes the bottles
+            },
           ),
         ],
       ),

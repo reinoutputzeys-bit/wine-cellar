@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'backup.dart';
 import 'data.dart';
 import 'lookup.dart';
 
@@ -14,6 +15,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final _key = TextEditingController();
   final _model = TextEditingController();
   bool _search = false;
+  String? _lastBackup;
   bool _show = false;
   bool _loading = true;
 
@@ -27,6 +29,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _key.text = await CellarDb.getSetting('gemini_key') ?? '';
     _model.text = await CellarDb.getSetting('gemini_model') ?? defaultModel;
     _search = (await CellarDb.getSetting('gemini_search')) == '1';
+    _lastBackup = await CellarDb.getSetting('last_backup');
     if (mounted) setState(() => _loading = false);
   }
 
@@ -35,6 +38,23 @@ class _SettingsPageState extends State<SettingsPage> {
     _key.dispose();
     _model.dispose();
     super.dispose();
+  }
+
+  String _lastBackupText() {
+    final d = DateTime.tryParse(_lastBackup ?? '');
+    if (d == null) return 'No backup made yet.';
+    String two(int n) => n.toString().padLeft(2, '0');
+    return 'Last backup: ${two(d.day)}/${two(d.month)}/${d.year}';
+  }
+
+  Future<void> _export() async {
+    await Backup.export(context);
+    final v = await CellarDb.getSetting('last_backup');
+    if (mounted) setState(() => _lastBackup = v);
+  }
+
+  Future<void> _restore() async {
+    await Backup.restore(context);
   }
 
   Future<void> _save() async {
@@ -104,6 +124,29 @@ class _SettingsPageState extends State<SettingsPage> {
                   onPressed: _save,
                   icon: const Icon(Icons.check),
                   label: const Text('Save'),
+                ),
+                const Divider(height: 40),
+                Text('Backup',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                const Text(
+                  'Saves all bottles and their photos in one file. Choose "Drive" in the '
+                  'share menu to keep it safe in Google Drive. Your Gemini key is not included.',
+                ),
+                const SizedBox(height: 8),
+                Text(_lastBackupText(),
+                    style: Theme.of(context).textTheme.bodySmall),
+                const SizedBox(height: 12),
+                FilledButton.tonalIcon(
+                  onPressed: _export,
+                  icon: const Icon(Icons.backup_outlined),
+                  label: const Text('Make backup'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _restore,
+                  icon: const Icon(Icons.restore),
+                  label: const Text('Restore from backup'),
                 ),
               ],
             ),

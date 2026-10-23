@@ -351,6 +351,16 @@ class BottleCard extends StatelessWidget {
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis),
                         ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints:
+                              const BoxConstraints(minWidth: 32, minHeight: 32),
+                          tooltip: 'Search on Google',
+                          icon: const Icon(Icons.travel_explore,
+                              size: 20, color: Color(0xFF1A73E8)),
+                          onPressed: () => searchOnGoogle(context, b),
+                        ),
                       ],
                     ),
                     if (b.producer.isNotEmpty)

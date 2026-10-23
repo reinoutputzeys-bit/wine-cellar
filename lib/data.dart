@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'rack.dart';
 
@@ -245,6 +246,20 @@ class CellarDb {
     await d.delete('bottles', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Replaces every bottle with [bottles] in one go (used by restore).
+  static Future<void> replaceAll(List<Bottle> bottles) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      await txn.delete('bottles');
+      final now = DateTime.now().toIso8601String();
+      for (final b in bottles) {
+        final map = b.toMap()..remove('id');
+        map['added_at'] = now;
+        b.id = await txn.insert('bottles', map);
+      }
+    });
+  }
+
   static Future<String?> getSetting(String key) async {
     final d = await db;
     final rows =
@@ -306,4 +321,22 @@ Future<bool> changeQuantity(BuildContext context, Bottle b, int delta) async {
     return true;
   }
   return false;
+}
+
+// ============================================================
+// SEARCH ON GOOGLE
+// ============================================================
+Future<void> searchOnGoogle(BuildContext context, Bottle b) async {
+  final q = [b.producer, b.name, b.vintage?.toString() ?? '', 'wine']
+      .where((s) => s.trim().isNotEmpty)
+      .join(' ');
+  final url = Uri.https('www.google.com', '/search', {'q': q});
+  bool ok = false;
+  try {
+    ok = await launchUrl(url, mode: LaunchMode.externalApplication);
+  } catch (_) {}
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the browser')));
+  }
 }

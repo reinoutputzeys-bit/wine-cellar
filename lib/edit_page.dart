@@ -458,6 +458,26 @@ class _BottleEditPageState extends State<BottleEditPage> {
       appBar: AppBar(
         title: Text(_isNew ? 'Add bottle' : 'Edit bottle'),
         actions: [
+          IconButton(
+            tooltip: 'Search on Google',
+            icon: const Icon(Icons.travel_explore),
+            onPressed: () {
+              final name = c('name').text.trim();
+              if (name.isEmpty) {
+                _snack('Type the wine name first');
+                return;
+              }
+              searchOnGoogle(
+                context,
+                Bottle(
+                  name: name,
+                  producer: c('producer').text.trim(),
+                  vintage: int.tryParse(c('vintage').text.trim()),
+                  drawer: '',
+                ),
+              );
+            },
+          ),
           if (!_isNew)
             IconButton(
               tooltip: 'Copy to another drawer',
