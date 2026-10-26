@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 
 import 'data.dart';
+import 'sync.dart';
 
 // ============================================================
 // BACKUP FILE FORMAT
@@ -116,13 +117,19 @@ class Backup {
     final when = created == null
         ? 'unknown date'
         : '${_two(created.day)}/${_two(created.month)}/${created.year}';
+    final shared = await Sync.instance.isConnected;
+    if (!context.mounted) {
+      await lines.cancel();
+      return false;
+    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Restore backup?'),
         content: Text(
             'Backup from $when with ${header['bottles'] ?? '?'} bottles.\n\n'
-            'This replaces everything that is in the app now.'),
+            'This replaces everything that is in the app now.'
+            '${shared ? '\n\nThe cellar is shared: this also replaces it on the other phone.' : ''}'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'backup.dart';
 import 'data.dart';
 import 'lookup.dart';
+import 'sync.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -166,6 +167,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   label: const Text('Save'),
                 ),
                 const Divider(height: 40),
+                const SharedCellarSection(),
+                const Divider(height: 40),
                 Text('Backup',
                     style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
@@ -190,6 +193,208 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+
+// ============================================================
+// SHARED CELLAR (both phones see and manage the same cellar)
+// ============================================================
+class SharedCellarSection extends StatefulWidget {
+  const SharedCellarSection({super.key});
+
+  @override
+  State<SharedCellarSection> createState() => _SharedCellarSectionState();
+}
+
+class _SharedCellarSectionState extends State<SharedCellarSection> {
+  final _project = TextEditingController();
+  final _apiKey = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  bool _connected = false;
+  bool _busy = false;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    _project.text = await CellarDb.getSetting('sync_project') ?? '';
+    _apiKey.text = await CellarDb.getSetting('sync_api_key') ?? '';
+    _email.text = await CellarDb.getSetting('sync_email') ?? '';
+    _connected = await Sync.instance.isConnected;
+    if (mounted) setState(() => _loading = false);
+  }
+
+  @override
+  void dispose() {
+    _project.dispose();
+    _apiKey.dispose();
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  void _show(String title, String text) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SelectableText(text),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _connect() async {
+    if ([_project, _apiKey, _email, _password].any((c) => c.text.trim().isEmpty)) {
+      _show('Shared cellar', 'Please fill in all four fields.');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await Sync.instance.connect(
+        projectId: _project.text.trim(),
+        apiKey: _apiKey.text.trim(),
+        email: _email.text.trim(),
+        password: _password.text,
+      );
+      _password.clear();
+      if (!mounted) return;
+      setState(() => _connected = true);
+      _show('Shared cellar',
+          '✅ Connected. Your bottles are now shared, and changes from the other phone will appear here.');
+    } catch (e) {
+      if (mounted) _show('Could not connect', '⚠️ $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _disconnect() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Stop sharing on this phone?'),
+        content: const Text(
+            'Your bottles stay on this phone, but changes are no longer shared. '
+            'You can connect again later.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Stop sharing')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await Sync.instance.disconnect();
+    if (mounted) setState(() => _connected = false);
+  }
+
+  String _time(DateTime? d) {
+    if (d == null) return 'not yet';
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(d.day)}/${two(d.month)} ${two(d.hour)}:${two(d.minute)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const SizedBox.shrink();
+    final title = Text('Shared cellar',
+        style: Theme.of(context).textTheme.titleMedium);
+
+    if (_connected) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          title,
+          const SizedBox(height: 8),
+          Text('Connected as ${_email.text} (project ${_project.text}). '
+              'Both phones see and manage the same bottles.'),
+          const SizedBox(height: 8),
+          ValueListenableBuilder<SyncState>(
+            valueListenable: Sync.instance.state,
+            builder: (context, st, _) => Text(
+              switch (st.phase) {
+                SyncPhase.syncing => 'Syncing…',
+                SyncPhase.error => '⚠️ ${st.message}',
+                _ => 'Last sync: ${_time(st.lastSync)}',
+              },
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.tonalIcon(
+            onPressed: () => Sync.instance.syncNow(),
+            icon: const Icon(Icons.sync),
+            label: const Text('Sync now'),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _disconnect,
+            icon: const Icon(Icons.link_off),
+            label: const Text('Stop sharing on this phone'),
+          ),
+        ],
+      );
+    }
+
+    InputDecoration deco(String label, [String? hint]) => InputDecoration(
+        labelText: label, hintText: hint, border: const OutlineInputBorder());
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        title,
+        const SizedBox(height: 8),
+        const Text(
+            'Share the cellar with someone else, so you both see and manage the same bottles. '
+            'Uses a free Google Firebase project. Each person signs in with their own email.'),
+        const SizedBox(height: 12),
+        TextField(
+            controller: _project,
+            autocorrect: false,
+            decoration: deco('Firebase Project ID', 'wine-cellar-12345')),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _apiKey,
+            autocorrect: false,
+            decoration: deco('Web API key', 'AIza…')),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _email,
+            autocorrect: false,
+            keyboardType: TextInputType.emailAddress,
+            decoration: deco('Your email')),
+        const SizedBox(height: 8),
+        TextField(
+            controller: _password,
+            obscureText: true,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: deco('Your password')),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _busy ? null : _connect,
+          icon: _busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.cloud_outlined),
+          label: Text(_busy ? 'Connecting…' : 'Connect'),
+        ),
+      ],
     );
   }
 }

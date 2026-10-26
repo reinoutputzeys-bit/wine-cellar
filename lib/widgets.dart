@@ -110,13 +110,32 @@ class CategoryCounts extends StatelessWidget {
 // SUMMARY (totals at the top of a tab)
 // ============================================================
 class SummaryBar extends StatelessWidget {
-  const SummaryBar({super.key, required this.bottles, required this.filtered});
+  const SummaryBar(
+      {super.key,
+      required this.bottles,
+      required this.filtered,
+      this.status = statusCellar});
 
   final List<Bottle> bottles;
   final bool filtered;
+  final String status;
 
   @override
   Widget build(BuildContext context) {
+    if (status != statusCellar) {
+      final n = bottles.length;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        child: Row(
+          children: [
+            Text(filtered ? '$n matching' : '$n wine${n == 1 ? '' : 's'}',
+                style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(width: 10),
+            CategoryCounts(counts: countEntriesByCategory(bottles), size: 20),
+          ],
+        ),
+      );
+    }
     final n = totalCount(bottles);
     final value = totalValue(bottles);
     return Padding(
@@ -325,9 +344,11 @@ class BottleCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        onLongPress: () async {
-          if (await copyBottleToDrawer(context, b)) onChanged();
-        },
+        onLongPress: b.inCellar
+            ? () async {
+                if (await copyBottleToDrawer(context, b)) onChanged();
+              }
+            : null,
         child: Padding(
           padding: const EdgeInsets.all(8),
           child: Row(
@@ -342,7 +363,12 @@ class BottleCard extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        CategoryBadge(type: b.category, count: b.quantity, size: 16),
+                        b.inCellar
+                            ? CategoryBadge(
+                                type: b.category, count: b.quantity, size: 16)
+                            : CircleAvatar(
+                                radius: 7,
+                                backgroundColor: typeBackground(b.category)),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(b.title,
@@ -384,9 +410,14 @@ class BottleCard extends StatelessWidget {
                           Text(formatMoney(b.price!),
                               style: const TextStyle(
                                   fontWeight: FontWeight.w600, fontSize: 13)),
-                        if (b.price != null && showDrawer)
+                        if (b.price != null && (showDrawer || !b.inCellar))
                           const Text('  ·  ', style: TextStyle(fontSize: 13)),
-                        if (showDrawer)
+                        if (!b.inCellar)
+                          Text(
+                              b.status == statusWish ? 'Wishlist' : 'Archive',
+                              style: const TextStyle(
+                                  fontSize: 13, color: Colors.black54)),
+                        if (showDrawer && b.inCellar)
                           Text('Drawer ${b.drawer}',
                               style: const TextStyle(
                                   fontSize: 13, color: Colors.black54)),
@@ -395,6 +426,15 @@ class BottleCard extends StatelessWidget {
                   ],
                 ),
               ),
+              if (!b.inCellar)
+                IconButton(
+                  tooltip: 'Put in the cellar',
+                  icon: const Icon(Icons.move_to_inbox_outlined),
+                  onPressed: () async {
+                    if (await moveToCellar(context, b)) onChanged();
+                  },
+                )
+              else
               Column(
                 children: [
                   IconButton(
@@ -470,7 +510,8 @@ class _DrawerContentsState extends State<DrawerContents> {
     final all = await CellarDb.all();
     if (!mounted) return;
     setState(() {
-      _bottles = all.where((b) => b.drawer == widget.code).toList();
+      _bottles =
+          all.where((b) => b.inCellar && b.drawer == widget.code).toList();
       _loading = false;
     });
   }

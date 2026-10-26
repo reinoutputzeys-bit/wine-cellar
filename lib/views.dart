@@ -99,13 +99,20 @@ class BottleListView extends StatelessWidget {
   const BottleListView({
     super.key,
     required this.bottles,
+    required this.status,
+    required this.onStatusChanged,
     required this.filter,
     required this.onFilterChanged,
     required this.onOpen,
     required this.onChanged,
   });
 
+  /// All entries (cellar, wishlist and archive).
   final List<Bottle> bottles;
+
+  /// Which list is shown: statusCellar, statusWish or statusArchive.
+  final String status;
+  final ValueChanged<String> onStatusChanged;
   final BottleFilter filter;
   final ValueChanged<BottleFilter> onFilterChanged;
   final void Function(Bottle) onOpen;
@@ -113,24 +120,57 @@ class BottleListView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final list = filter.apply(bottles)
+    final inList = bottles.where((b) => b.status == status).toList();
+    final list = filter.apply(inList)
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    int n(String s) => bottles.where((b) => b.status == s).length;
+    final empty = switch (status) {
+      statusWish => 'Your wishlist is empty. Tap “Add to wishlist”.',
+      statusArchive =>
+        'Nothing archived yet. When you finish a wine, its details are kept here.',
+      _ => 'No bottles yet. Tap “Add bottle” to start.',
+    };
     return Column(
       children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: SegmentedButton<String>(
+            showSelectedIcon: false,
+            segments: [
+              ButtonSegment(
+                  value: statusCellar,
+                  icon: const Icon(Icons.wine_bar, size: 18),
+                  label: Text('Cellar ${totalCount(bottles.where((b) => b.inCellar))}')),
+              ButtonSegment(
+                  value: statusWish,
+                  icon: const Icon(Icons.favorite_border, size: 18),
+                  label: Text('Wishlist ${n(statusWish)}')),
+              ButtonSegment(
+                  value: statusArchive,
+                  icon: const Icon(Icons.inventory_2_outlined, size: 18),
+                  label: Text('Archive ${n(statusArchive)}')),
+            ],
+            selected: {status},
+            onSelectionChanged: (s) => onStatusChanged(s.first),
+          ),
+        ),
         FilterBar(
           filter: filter,
-          bottles: bottles,
+          bottles: inList,
           onChanged: onFilterChanged,
           showSearch: true,
         ),
-        SummaryBar(bottles: list, filtered: filter.isActive),
+        SummaryBar(bottles: list, filtered: filter.isActive, status: status),
         const Divider(height: 8),
         Expanded(
           child: list.isEmpty
               ? Center(
-                  child: Text(bottles.isEmpty
-                      ? 'No bottles yet. Tap “Add bottle” to start.'
-                      : 'No bottles match your filter'))
+                  child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                      inList.isEmpty ? empty : 'Nothing matches your filter',
+                      textAlign: TextAlign.center),
+                ))
               : ListView.builder(
                   padding: const EdgeInsets.only(bottom: 96),
                   itemCount: list.length,

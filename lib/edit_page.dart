@@ -33,10 +33,14 @@ class DrawerPage extends StatelessWidget {
 // ADD / EDIT BOTTLE
 // ============================================================
 class BottleEditPage extends StatefulWidget {
-  const BottleEditPage({super.key, this.bottle, this.initialDrawer});
+  const BottleEditPage(
+      {super.key, this.bottle, this.initialDrawer, this.status = statusCellar});
 
   final Bottle? bottle;
   final String? initialDrawer;
+
+  /// For a new entry: statusCellar or statusWish.
+  final String status;
 
   @override
   State<BottleEditPage> createState() => _BottleEditPageState();
@@ -56,6 +60,11 @@ class _BottleEditPageState extends State<BottleEditPage> {
   List<String> _knownPeople = [];
 
   bool get _isNew => widget.bottle == null;
+
+  late final String _status = widget.bottle?.status ?? widget.status;
+  bool get _inCellar => _status == statusCellar;
+
+  String get _listName => _status == statusWish ? 'wishlist' : 'archive';
 
   TextEditingController c(String key) => _c[key]!;
 
@@ -305,16 +314,12 @@ class _BottleEditPageState extends State<BottleEditPage> {
     return v;
   }
 
-  Future<void> _save() async {
+  /// Copies the form into [b]. Returns false (and says why) if something is wrong.
+  bool _collect(Bottle b) {
     final name = c('name').text.trim();
     if (name.isEmpty) {
       _snack('Please enter a name');
-      return;
-    }
-    final drawer = _drawer;
-    if (drawer == null) {
-      _snack('Please choose a drawer');
-      return;
+      return false;
     }
     final errors = <String>[];
     final vintage = _year('vintage', 'Year', errors);
@@ -322,46 +327,18 @@ class _BottleEditPageState extends State<BottleEditPage> {
     final until = _year('drinkUntil', 'Drink until', errors);
     final priceText = c('price').text.trim();
     final price = parseMoney(priceText);
-    if (priceText.isNotEmpty && price == null) errors.add('Price should be a number, like 24,50');
+    if (priceText.isNotEmpty && price == null) {
+      errors.add('Price should be a number, like 24,50');
+    }
     if (errors.isNotEmpty) {
       _snack(errors.first);
-      return;
+      return false;
     }
-
-    final all = await CellarDb.all();
-    final used = all
-        .where((b) => b.drawer == drawer && b.id != widget.bottle?.id)
-        .fold<int>(0, (s, b) => s + b.quantity);
-    final free = capacityOf(drawer) - used;
-    if (_qty > free) {
-      if (!mounted) return;
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Drawer is full'),
-          content: Text(
-              'Drawer $drawer has only ${free < 0 ? 0 : free} free spot(s). Save anyway?'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel')),
-            FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Save anyway')),
-          ],
-        ),
-      );
-      if (ok != true) return;
-    }
-
-    final b = widget.bottle ?? Bottle(name: name, drawer: drawer);
     b
       ..name = name
       ..producer = c('producer').text.trim()
       ..vintage = vintage
       ..type = _type
-      ..drawer = drawer
-      ..quantity = _qty
       ..photoPath = _photo
       ..country = c('country').text.trim()
       ..region = c('region').text.trim()
@@ -374,33 +351,221 @@ class _BottleEditPageState extends State<BottleEditPage> {
       ..drinkWith = c('drinkWith').text.trim()
       ..description = c('description').text.trim()
       ..notes = c('notes').text.trim();
-    await CellarDb.save(b);
-    if (!mounted) return;
-    Navigator.pop(context);
+    return true;
   }
 
-  Future<void> _delete() async {
-    final b = widget.bottle;
-    if (b == null || b.id == null) return;
+  Future<bool> _ask(String title, String text, String yes) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete bottle?'),
-        content: Text('Remove ${b.title} from the cellar?'),
+        title: Text(title),
+        content: Text(text),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Cancel')),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Delete')),
+              onPressed: () => Navigator.pop(ctx, true), child: Text(yes)),
         ],
       ),
     );
-    if (ok != true) return;
-    await CellarDb.delete(b.id!);
+    return ok == true;
+  }
+
+  Future<void> _save() async {
+    final drawer = _drawer;
+    if (_inCellar && drawer == null) {
+      _snack('Please choose a drawer');
+      return;
+    }
+    final b = widget.bottle ??
+        Bottle(name: '', drawer: drawer ?? '', status: _status);
+    final before = b.toMap();
+    if (!_collect(b)) return;
+    b.status = _status;
+    if (_inCellar) {
+      b
+        ..drawer = drawer!
+        ..quantity = _qty;
+    } else {
+      b
+        ..drawer = ''
+        ..quantity = _status == statusWish ? 1 : 0;
+    }
+
+    final all = await CellarDb.all();
+    if (!mounted) return;
+
+    // Room in the drawer?
+    if (_inCellar) {
+      final used = all
+          .where((x) => x.inCellar && x.drawer == drawer && x.id != b.id)
+          .fold<int>(0, (s, x) => s + x.quantity);
+      final free = capacityOf(drawer!) - used;
+      if (_qty > free &&
+          !await _ask(
+              'Drawer is full',
+              'Drawer $drawer has only ${free < 0 ? 0 : free} free spot(s). Save anyway?',
+              'Save anyway')) {
+        _restore(b, before);
+        return;
+      }
+    }
+
+    // No duplicates in the wishlist or the archive.
+    if (!_inCellar) {
+      final dups = all
+          .where((x) => x.status == _status && x.id != b.id && x.wineKey == b.wineKey)
+          .toList();
+      if (dups.isNotEmpty) {
+        if (!mounted) return;
+        if (!await _ask(
+            'Already in your $_listName',
+            '${b.title} is already in your $_listName. Combine them into one? '
+                'What you typed here is kept; empty fields are filled from the existing one.',
+            'Combine')) {
+          _restore(b, before);
+          return;
+        }
+        await _mergeInto(b, dups);
+        if (mounted) Navigator.pop(context);
+        return;
+      }
+      // Adding to the wishlist a wine you had before: reuse the archived data.
+      if (_status == statusWish && _isNew) {
+        final arch = all
+            .where((x) => x.status == statusArchive && x.wineKey == b.wineKey)
+            .toList();
+        if (arch.isNotEmpty) {
+          if (!mounted) return;
+          if (await _ask(
+              'You had this wine before',
+              '${b.title} is in your archive. Move it from the archive to your wishlist? '
+                  'Its details and your notes are kept.',
+              'Move to wishlist')) {
+            await _mergeInto(b, arch);
+            if (mounted) Navigator.pop(context);
+            return;
+          }
+        }
+      }
+    }
+
+    await CellarDb.save(b);
+
+    // Bought a wine from the wishlist: keep its notes, remove it from the wishlist.
+    if (_inCellar && _isNew) {
+      final wish = all
+          .where((x) => x.status == statusWish && x.wineKey == b.wineKey)
+          .toList();
+      if (wish.isNotEmpty) {
+        for (final w in wish) {
+          b.absorb(w);
+          if (w.id != null) await CellarDb.delete(w.id!);
+        }
+        await CellarDb.save(b);
+        if (mounted) _snack('${b.title} removed from your wishlist');
+      }
+    }
     if (!mounted) return;
     Navigator.pop(context);
+  }
+
+  /// Puts the fields of [b] back as they were (after a cancelled save).
+  void _restore(Bottle b, Map<String, Object?> before) {
+    if (widget.bottle == null) return;
+    final old = Bottle.fromMap(before);
+    b
+      ..name = old.name
+      ..producer = old.producer
+      ..vintage = old.vintage
+      ..type = old.type
+      ..drawer = old.drawer
+      ..quantity = old.quantity
+      ..photoPath = old.photoPath
+      ..country = old.country
+      ..region = old.region
+      ..grapes = old.grapes
+      ..alcohol = old.alcohol
+      ..drinkFrom = old.drinkFrom
+      ..drinkUntil = old.drinkUntil
+      ..price = old.price
+      ..pairing = old.pairing
+      ..drinkWith = old.drinkWith
+      ..description = old.description
+      ..notes = old.notes
+      ..status = old.status;
+  }
+
+  /// Saves [b] (newest data) into the first of [others] and removes the rest.
+  Future<void> _mergeInto(Bottle b, List<Bottle> others) async {
+    final keep = others.first;
+    final oldId = b.id;
+    b.absorb(keep);
+    b
+      ..id = keep.id
+      ..uuid = keep.uuid
+      ..status = _status
+      ..drawer = ''
+      ..quantity = _status == statusWish ? 1 : 0;
+    await CellarDb.save(b);
+    for (final x in others.skip(1)) {
+      if (x.id != null) await CellarDb.delete(x.id!);
+    }
+    if (oldId != null && oldId != keep.id) await CellarDb.delete(oldId);
+  }
+
+  Future<void> _putInCellar() async {
+    final b = widget.bottle;
+    if (b == null) return;
+    final before = b.toMap();
+    if (!_collect(b)) return;
+    if (await moveToCellar(context, b)) {
+      if (mounted) Navigator.pop(context);
+    } else {
+      _restore(b, before);
+    }
+  }
+
+  Future<void> _delete() async {
+    final b = widget.bottle;
+    if (b == null || b.id == null) return;
+    if (!_inCellar) {
+      if (!await _ask('Delete for good?',
+          'Remove ${b.title} from your $_listName? This cannot be undone.', 'Delete')) {
+        return;
+      }
+      await CellarDb.delete(b.id!);
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove from the cellar?'),
+        content: Text('Move ${b.title} to the archive? All details and your notes '
+            'are kept, so you can put it back later.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, 'delete'),
+              child: const Text('Delete completely')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'archive'),
+              child: const Text('Archive')),
+        ],
+      ),
+    );
+    if (choice == 'delete') {
+      await CellarDb.delete(b.id!);
+    } else if (choice == 'archive') {
+      await archiveBottle(b);
+    } else {
+      return;
+    }
+    if (mounted) Navigator.pop(context);
   }
 
   // ---------------- UI ----------------
@@ -530,7 +695,13 @@ class _BottleEditPageState extends State<BottleEditPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isNew ? 'Add bottle' : 'Edit bottle'),
+        title: Text(_isNew
+            ? (_inCellar ? 'Add bottle' : 'Add to wishlist')
+            : (_inCellar
+                ? 'Edit bottle'
+                : _status == statusWish
+                    ? 'Wishlist wine'
+                    : 'Archived wine')),
         actions: [
           IconButton(
             tooltip: 'Search on Google',
@@ -552,7 +723,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
               );
             },
           ),
-          if (!_isNew)
+          if (!_isNew && _inCellar)
             IconButton(
               tooltip: 'Copy to another drawer',
               icon: const Icon(Icons.copy_all_outlined),
@@ -663,6 +834,7 @@ class _BottleEditPageState extends State<BottleEditPage> {
           _field('region', 'Region'),
           _field('grapes', 'Grapes', hint: 'Malbec, Cabernet Franc'),
 
+          if (_inCellar) ...[
           _heading('In the cellar'),
           Card(
             margin: EdgeInsets.zero,
@@ -699,6 +871,8 @@ class _BottleEditPageState extends State<BottleEditPage> {
             ),
           ),
           const SizedBox(height: 12),
+          ] else
+            _heading(_status == statusWish ? 'On your wishlist' : 'In your archive'),
           _field('price', 'Price per bottle',
               keyboard: const TextInputType.numberWithOptions(decimal: true),
               prefix: '€ '),
@@ -753,6 +927,14 @@ class _BottleEditPageState extends State<BottleEditPage> {
             icon: const Icon(Icons.check),
             label: const Text('Save'),
           ),
+          if (!_isNew && !_inCellar) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _putInCellar,
+              icon: const Icon(Icons.move_to_inbox_outlined),
+              label: const Text('Put in the cellar'),
+            ),
+          ],
         ],
       ),
     );
@@ -861,26 +1043,22 @@ class DrawerPickerSheet extends StatelessWidget {
 // COPY A BOTTLE TO ANOTHER DRAWER
 // ============================================================
 
-/// Lets the user pick a drawer and a number of bottles, then saves a copy
-/// of [source] (same wine, photo and details) in that drawer.
-Future<bool> copyBottleToDrawer(BuildContext context, Bottle source) async {
+/// Asks for a drawer and a number of bottles. Returns null if cancelled.
+Future<(String, int)?> askDrawerAndQuantity(
+    BuildContext context, String title) async {
   final all = await CellarDb.all();
   final usage = <String, int>{};
-  for (final b in all) {
+  for (final b in all.where((x) => x.inCellar)) {
     usage[b.drawer] = (usage[b.drawer] ?? 0) + b.quantity;
   }
-  if (!context.mounted) return false;
+  if (!context.mounted) return null;
 
   final drawer = await showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
-    builder: (ctx) => DrawerPickerSheet(
-      usage: usage,
-      needed: 1,
-      title: 'Copy ${source.title} to…',
-    ),
+    builder: (ctx) => DrawerPickerSheet(usage: usage, needed: 1, title: title),
   );
-  if (drawer == null || !context.mounted) return false;
+  if (drawer == null || !context.mounted) return null;
 
   final free = capacityOf(drawer) - (usage[drawer] ?? 0);
   var qty = 1;
@@ -888,7 +1066,7 @@ Future<bool> copyBottleToDrawer(BuildContext context, Bottle source) async {
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setD) => AlertDialog(
-        title: Text('Copy to drawer $drawer'),
+        title: Text('Drawer $drawer'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -922,21 +1100,49 @@ Future<bool> copyBottleToDrawer(BuildContext context, Bottle source) async {
               child: const Text('Cancel')),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Copy')),
+              child: const Text('OK')),
         ],
       ),
     ),
   );
-  if (ok != true) return false;
+  if (ok != true) return null;
+  return (drawer, qty);
+}
 
+/// Saves a copy of [source] (same wine, photo and details) in another drawer.
+Future<bool> copyBottleToDrawer(BuildContext context, Bottle source) async {
+  final r = await askDrawerAndQuantity(context, 'Copy ${source.title} to…');
+  if (r == null) return false;
+  final (drawer, qty) = r;
   final copy = Bottle.fromMap(source.toMap())
     ..id = null
+    ..uuid = null
+    ..status = statusCellar
     ..drawer = drawer
     ..quantity = qty;
   await CellarDb.save(copy);
   if (context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Copied $qty × ${source.title} to drawer $drawer')));
+  }
+  return true;
+}
+
+/// Moves a wishlist or archive wine into a drawer, keeping all its data.
+Future<bool> moveToCellar(BuildContext context, Bottle b) async {
+  final r = await askDrawerAndQuantity(context, 'Put ${b.title} in…');
+  if (r == null) return false;
+  final (drawer, qty) = r;
+  final from = b.status;
+  b
+    ..status = statusCellar
+    ..drawer = drawer
+    ..quantity = qty;
+  await CellarDb.save(b);
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            '${b.title} is now in drawer $drawer${from == statusWish ? ' (removed from wishlist)' : ''}')));
   }
   return true;
 }
