@@ -402,12 +402,20 @@ class _BottleEditPageState extends State<BottleEditPage> {
           .where((x) => x.inCellar && x.drawer == drawer && x.id != b.id)
           .fold<int>(0, (s, x) => s + x.quantity);
       final free = capacityOf(drawer!) - used;
-      if (_qty > free &&
-          !await _ask(
-              'Drawer is full',
-              'Drawer $drawer has only ${free < 0 ? 0 : free} free spot(s). Save anyway?',
-              'Save anyway')) {
+      if (_qty > free) {
         _restore(b, before);
+        final room = free < 0 ? 0 : free;
+        final choose = await _ask(
+            room == 0 ? 'Drawer $drawer is full' : 'Not enough room in $drawer',
+            room == 0
+                ? 'Drawer $drawer has no free spots. Choose another drawer?'
+                : 'Drawer $drawer has room for $room more bottle${room == 1 ? '' : 's'}, '
+                    'not $_qty. Choose another drawer, or cancel and lower the number.',
+            'Choose another drawer');
+        if (!choose || !mounted) return;
+        final oldDrawer = _drawer;
+        await _pickDrawer();
+        if (mounted && _drawer != null && _drawer != oldDrawer) await _save();
         return;
       }
     }
@@ -1004,6 +1012,7 @@ class DrawerPickerSheet extends StatelessWidget {
     final free = cap - (usage[code] ?? 0);
     final fits = free >= needed;
     final isSel = code == selected;
+    final full = free <= 0;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Material(
@@ -1015,7 +1024,8 @@ class DrawerPickerSheet extends StatelessWidget {
         borderRadius: BorderRadius.circular(6),
         child: InkWell(
           borderRadius: BorderRadius.circular(6),
-          onTap: () => Navigator.pop(context, code),
+          // A drawer without room for these bottles cannot be chosen.
+          onTap: fits ? () => Navigator.pop(context, code) : null,
           child: SizedBox(
             width: 64,
             height: 44,
@@ -1026,7 +1036,7 @@ class DrawerPickerSheet extends StatelessWidget {
                     style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: isSel ? Colors.white : Colors.black87)),
-                Text('${free < 0 ? 0 : free} free',
+                Text(full ? 'full' : '$free free',
                     style: TextStyle(
                         fontSize: 11,
                         color: isSel ? Colors.white : Colors.black54)),
@@ -1085,13 +1095,10 @@ Future<(String, int)?> askDrawerAndQuantity(
                     style: Theme.of(ctx).textTheme.titleMedium),
                 IconButton(
                   icon: const Icon(Icons.add_circle_outline),
-                  onPressed: () => setD(() => qty++),
+                  onPressed: qty < free ? () => setD(() => qty++) : null,
                 ),
               ],
             ),
-            if (qty > free)
-              Text('That is more than fits in the drawer.',
-                  style: TextStyle(color: Colors.red.shade700)),
           ],
         ),
         actions: [
@@ -1143,6 +1150,72 @@ Future<bool> moveToCellar(BuildContext context, Bottle b) async {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(
             '${b.title} is now in drawer $drawer${from == statusWish ? ' (removed from wishlist)' : ''}')));
+  }
+  return true;
+}
+
+/// Adds one bottle. If the drawer is full, offers to put it in another drawer.
+Future<bool> addOneBottle(BuildContext context, Bottle b) async {
+  final all = await CellarDb.all();
+  final cellar = all.where((x) => x.inCellar).toList();
+  final used = cellar
+      .where((x) => x.drawer == b.drawer)
+      .fold<int>(0, (s, x) => s + x.quantity);
+  final cap = capacityOf(b.drawer);
+  if (used < cap) {
+    b.quantity += 1;
+    await CellarDb.save(b);
+    return true;
+  }
+  if (!context.mounted) return false;
+  final go = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Drawer ${b.drawer} is full'),
+      content: Text('It already holds $used of $cap bottles. '
+          'Put the extra ${b.title} in another drawer?'),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Choose drawer')),
+      ],
+    ),
+  );
+  if (go != true || !context.mounted) return false;
+
+  final usage = <String, int>{};
+  for (final x in cellar) {
+    usage[x.drawer] = (usage[x.drawer] ?? 0) + x.quantity;
+  }
+  final drawer = await showModalBottomSheet<String>(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => DrawerPickerSheet(
+        usage: usage, needed: 1, title: 'Put the extra ${b.title} in…'),
+  );
+  if (drawer == null) return false;
+
+  // Same wine already in that drawer: add to it; otherwise a new entry there.
+  final same = cellar
+      .where((x) => x.drawer == drawer && x.wineKey == b.wineKey)
+      .toList();
+  if (same.isNotEmpty) {
+    same.first.quantity += 1;
+    await CellarDb.save(same.first);
+  } else {
+    final copy = Bottle.fromMap(b.toMap())
+      ..id = null
+      ..uuid = null
+      ..drawer = drawer
+      ..quantity = 1;
+    await CellarDb.save(copy);
+  }
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Added 1 × ${b.title} to drawer $drawer')));
   }
   return true;
 }

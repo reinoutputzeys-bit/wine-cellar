@@ -442,7 +442,7 @@ class BottleCard extends StatelessWidget {
                     tooltip: 'One more',
                     icon: const Icon(Icons.add_circle_outline),
                     onPressed: () async {
-                      if (await changeQuantity(context, b, 1)) onChanged();
+                      if (await addOneBottle(context, b)) onChanged();
                     },
                   ),
                   Text('${b.quantity}',
